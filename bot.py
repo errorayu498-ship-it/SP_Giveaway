@@ -185,7 +185,7 @@ async def xp(interaction: discord.Interaction, member: discord.Member=None):
     db = load_db()
     user = db["users"].get(str(member.id), {"xp":0,"level":1})
 
-    embed = discord.Embed(title="📊 XP PROFILE", color=EMBED_COLOR)
+    embed = discord.Embed(title="⭐ XP PROFILE", color=EMBED_COLOR)
 
     embed.add_field(name="User", value=member.mention)
     embed.add_field(name="XP", value=user["xp"])
@@ -227,10 +227,10 @@ async def cgw(interaction: discord.Interaction, prize:str, winners:int,
         color=EMBED_COLOR
     )
 
-    embed.add_field(name="Prize", value=prize, inline=False)
-    embed.add_field(name="Winners", value=winners)
-    embed.add_field(name="Host", value=interaction.user.mention)
-    embed.add_field(name="Entries", value="0")
+    embed.add_field(name="> 🎁 Prize", value=prize, inline=False)
+    embed.add_field(name="> 🎉 Winners", value=winners)
+    embed.add_field(name="> 👑 Host", value=interaction.user.mention)
+    embed.add_field(name="> 👥 Entries", value="0")
 
     embed.add_field(
         name="Requirements",
@@ -301,7 +301,7 @@ async def endgw(interaction: discord.Interaction, gid:str):
     await msg.edit(embed=embed, view=view)
 
     await channel.send(
-        f"🎁 Prize: {prize}",
+        f"🎁 Prize: {gw['prize']}",
         f"🎉 Winner(s): {winner_mentions}"
     )
 
@@ -337,6 +337,58 @@ async def deletegw(interaction: discord.Interaction, gid:str):
         "Giveaway deleted.",
         ephemeral=True
     )
+
+
+# -------------------------
+# LIST GIVEAWAYS
+# -------------------------
+
+@bot.tree.command(name="glist")
+async def glist(interaction:discord.Interaction):
+
+    data = load_giveaways()
+
+    if not data:
+        await interaction.response.send_message("❌ No active giveaways.",ephemeral=True)
+        return
+
+    embed = discord.Embed(title="🎁 Active Giveaways",color=EMBED_COLOR)
+
+    for gid,gw in data.items():
+
+        embed.add_field(
+            name=f"ID: {gid}",
+            value=f"Prize: {gw['prize']}\nEntries: {len(gw['entries'])}",
+            inline=False
+        )
+
+    await interaction.response.send_message(embed=embed)
+
+# -------------------------
+# GIVEAWAY INFO
+# -------------------------
+
+@bot.tree.command(name="ginfo")
+async def ginfo(interaction:discord.Interaction,giveaway_id:str):
+
+    data = load_giveaways()
+
+    if giveaway_id not in data:
+        await interaction.response.send_message("❌ Giveaway not found.",ephemeral=True)
+        return
+
+    gw = data[giveaway_id]
+
+    embed = discord.Embed(title="🎉 Giveaway Info",color=EMBED_COLOR)
+
+    embed.add_field(name="Prize",value=gw["prize"])
+    embed.add_field(name="Entries",value=len(gw["entries"]))
+    embed.add_field(name="Winners",value=gw["winners"])
+
+    embed.set_footer(text=f"Giveaway ID: {giveaway_id}")
+
+    await interaction.response.send_message(embed=embed)
+
 
 # ---------------- HELP COMMAND ----------------
 
