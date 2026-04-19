@@ -1,260 +1,533 @@
 import discord
 from discord.ext import commands, tasks
-from discord import app_commands
-import sqlite3
-import random
+from dotenv import load_dotenv
 import json
-import string
-import asyncio
-from datetime import datetime, timedelta
+import os
+import random
+import time
 
-TOKEN = "YOUR_BOT_TOKEN"
+load_dotenv()
+TOKEN = os.getenv("TOKEN")
 
-XP_CHANNEL_ID = 123456789
-LOG_CHANNEL_ID = 123456789
+# ---------------- CONFIG ----------------
+
+with open("config.json") as f:
+    config = json.load(f)
+
+EMBED_COLOR = config["embed_color"]
+XP_CHANNEL = config["xp_channel_id"]
+LOG_CHANNEL = config["log_channel_id"]
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# DATABASE
-db = sqlite3.connect("database.db")
-cursor = db.cursor()
+cooldowns = {}
 
-cursor.execute("""CREATE TABLE IF NOT EXISTS xp(
-user_id INTEGER PRIMARY KEY,
-xp INTEGER DEFAULT 0,
-level INTEGER DEFAULT 0
-)""")
+# ---------------- DATABASE ----------------
 
-cursor.execute("""CREATE TABLE IF NOT EXISTS invites(
-user_id INTEGER PRIMARY KEY,
-invites INTEGER DEFAULT 0
-)""")
+def load_db():
+    if not os.path.exists("database.json"):
+        return {"users": {}, "giveaways": {}}
 
-cursor.execute("""CREATE TABLE IF NOT EXISTS giveaways(
-gw_id TEXT,
-message_id INTEGER,
-channel_id INTEGER,
-ended INTEGER DEFAULT 0
-)""")
+    with open("database.json") as f:
+        return json.load(f)
 
-db.commit()
+def save_db(data):
+    with open("database.json","w") as f:
+        json.dump(data,f,indent=4)
 
-# LOAD ACTIVITY
-with open("activity.json") as f:
-    activity_data = json.load(f)["activities"]
+def get_user(db, uid):
+    if uid not in db["users"]:
+        db["users"][uid] = {
+            "xp":0,
+            "level":1,
+            "invites":0
+        }
+    return db["users"][uid]
 
-# MULTI ACTIVITY
-@tasks.loop(seconds=15)
-async def change_activity():
-    activity = random.choice(activity_data)
-    await bot.change_presence(
-        status=discord.Status.dnd,
-        activity=discord.Game(activity)
-    )
+# ---------------- ADMIN CHECK ----------------
 
-# LEVEL SYSTEM
-def level_formula(xp):
-    return int((xp / 100) ** 0.5)
+def admin_only(interaction):
+    return interaction.user.guild_permissions.administrator
 
-# BOT READY
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user}")
-    change_activity.start()
-    try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} commands")
-    except:
-        pass
+# ---------------- XP SYSTEM ----------------
 
-# MESSAGE XP SYSTEM
 @bot.event
 async def on_message(message):
+
     if message.author.bot:
         return
 
-    if message.channel.id == XP_CHANNEL_ID:
-        user = message.author.id
+    if message.channel.id != XP_CHANNEL:
+        return
 
-        cursor.execute("SELECT xp, level FROM xp WHERE user_id=?", (user,))
-        data = cursor.fetchone()
+    db = load_db()
+    uid = str(message.author.id)
 
-        if data is None:
-            xp = 10
-            level = 0
-            cursor.execute("INSERT INTO xp VALUES (?,?,?)",(user,xp,level))
-        else:
-            xp = data[0] + 10
-            level = data[1]
+    user = get_user(db, uid)
 
-            new_level = level_formula(xp)
+    now = time.time()
+    if uid in cooldowns and now - cooldowns[uid] < 5:
+        return
 
-            cursor.execute("UPDATE xp SET xp=? WHERE user_id=?",(xp,user))
+    cooldowns[uid] = now
 
-            if new_level > level:
-                cursor.execute("UPDATE xp SET level=? WHERE user_id=?",(new_level,user))
-                await message.channel.send(f"{message.author.mention} 🎉 Level Up! **Level {new_level}**")
+    old = user["xp"]
+    user["xp"] += 10
+    new = user["xp"]
 
-        db.commit()
+    if new >= user["level"] * 100:
+        user["level"] += 1
+        await message.channel.send(
+            f"🎉 {message.author.mention} reached **Level {user['level']}**!"
+        )
 
-        await message.channel.send(f"{message.author.mention} gained **10 XP**")
+    if new % 100 == 0 and new != old:
+        await message.channel.send(
+            f"📈 {message.author.mention} reached **{new} XP**!"
+        )
+
+    save_db(db)
 
     await bot.process_commands(message)
 
-# XP COMMAND
-@bot.tree.command(name="xp")
-async def xp(interaction: discord.Interaction, member: discord.Member=None):
-    if member is None:
-        member = interaction.user
+# ---------------- ACTIVITY SYSTEM ----------------
 
-    cursor.execute("SELECT xp, level FROM xp WHERE user_id=?", (member.id,))
-    data = cursor.fetchone()
+@tasks.loop(seconds=15)
+async def change_activity():
 
-    if data is None:
-        await interaction.response.send_message("No XP yet.")
-    else:
-        await interaction.response.send_message(
-            f"{member.mention}\nXP: {data[0]}\nLevel: {data[1]}"
-        )
+    with open("activity.json") as f:
+        data = json.load(f)
 
-# INVITE COMMAND
-@bot.tree.command(name="invite")
-async def invite(interaction: discord.Interaction, member: discord.Member=None):
+    activity = random.choice(data["activities"])
 
-    if member is None:
-        member = interaction.user
-
-    cursor.execute("SELECT invites FROM invites WHERE user_id=?", (member.id,))
-    data = cursor.fetchone()
-
-    if data is None:
-        await interaction.response.send_message("Invites: 0")
-    else:
-        await interaction.response.send_message(f"Invites: {data[0]}")
-
-# HELP COMMAND
-@bot.tree.command(name="help")
-async def help_cmd(interaction: discord.Interaction):
-
-    embed = discord.Embed(
-        title="Bot Commands",
-        color=0x00ff00
+    await bot.change_presence(
+        status=discord.Status.dnd,
+        activity=discord.Game(name=activity)
     )
 
-    embed.add_field(name="/xp", value="Check XP", inline=False)
-    embed.add_field(name="/invite", value="Check invites", inline=False)
-    embed.add_field(name="/giveaway", value="Create giveaway (Admin)", inline=False)
-    embed.add_field(name="/endgw", value="End giveaway (Admin)", inline=False)
-    embed.add_field(name="/deletegw", value="Delete giveaway (Admin)", inline=False)
-    embed.add_field(name="/adminpanel", value="Admin control panel", inline=False)
+# ---------------- GIVEAWAY BUTTON ----------------
 
-    await interaction.response.send_message(embed=embed)
-
-# GIVEAWAY BUTTON
 class GiveawayView(discord.ui.View):
+
+    def __init__(self, gid, ended=False):
+        super().__init__(timeout=None)
+        self.gid = gid
+
+        if ended:
+            for item in self.children:
+                item.disabled = True
+
+    @discord.ui.button(label="Enter Giveaway", style=discord.ButtonStyle.green, emoji="🎉")
+    async def enter(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+        db = load_db()
+        gw = db["giveaways"][self.gid]
+
+        uid = str(interaction.user.id)
+        user = get_user(db, uid)
+
+        if uid in gw["entries"]:
+            return await interaction.response.send_message(
+                "You already joined.", ephemeral=True
+            )
+
+        # ROLE CHECK
+        if gw["role_req"]:
+            if gw["role_req"] not in [r.id for r in interaction.user.roles]:
+                return await interaction.response.send_message(
+                    "❌ Required role missing.", ephemeral=True
+                )
+
+        # XP CHECK
+        if user["xp"] < gw["xp_req"]:
+            return await interaction.response.send_message(
+                "❌ Not enough XP.", ephemeral=True
+            )
+
+        # INVITE CHECK
+        if user["invites"] < gw["invite_req"]:
+            return await interaction.response.send_message(
+                "❌ Not enough invites.", ephemeral=True
+            )
+
+        gw["entries"].append(uid)
+        save_db(db)
+
+        msg = await interaction.channel.fetch_message(gw["message"])
+
+        embed = msg.embeds[0]
+        embed.set_field_at(3, name="Entries", value=str(len(gw["entries"])))
+
+        await msg.edit(embed=embed)
+
+        await interaction.response.send_message(
+            "🎉 You entered the giveaway!", ephemeral=True
+        )
+
+# ---------------- READY ----------------
+
+@bot.event
+async def on_ready():
+
+    await bot.tree.sync()
+    change_activity.start()
+
+    print(f"{bot.user} ONLINE")
+
+# ---------------- ADMIN PANEL ----------------
+
+class EditXPModal(discord.ui.Modal, title="Edit User XP"):
+
+    userid = discord.ui.TextInput(label="User ID", placeholder="Enter user ID")
+    xp = discord.ui.TextInput(label="New XP", placeholder="Enter new XP value")
+
+    async def on_submit(self, interaction: discord.Interaction):
+
+        db = load_db()
+
+        uid = self.userid.value
+        xp = int(self.xp.value)
+
+        user = get_user(db, uid)
+        user["xp"] = xp
+
+        save_db(db)
+
+        embed = discord.Embed(
+            title="✅ XP Updated",
+            description=f"User ID **{uid}** XP set to **{xp}**",
+            color=EMBED_COLOR
+        )
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class EditInviteModal(discord.ui.Modal, title="Edit User Invites"):
+
+    userid = discord.ui.TextInput(label="User ID")
+    invites = discord.ui.TextInput(label="New Invite Amount")
+
+    async def on_submit(self, interaction: discord.Interaction):
+
+        db = load_db()
+
+        uid = self.userid.value
+        invites = int(self.invites.value)
+
+        user = get_user(db, uid)
+        user["invites"] = invites
+
+        save_db(db)
+
+        embed = discord.Embed(
+            title="📩 Invites Updated",
+            description=f"User ID **{uid}** invites set to **{invites}**",
+            color=EMBED_COLOR
+        )
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class UserStatsModal(discord.ui.Modal, title="Check User Stats"):
+
+    userid = discord.ui.TextInput(label="User ID")
+
+    async def on_submit(self, interaction: discord.Interaction):
+
+        db = load_db()
+
+        uid = self.userid.value
+
+        user = db["users"].get(uid)
+
+        if not user:
+            return await interaction.response.send_message(
+                "User not found in database.",
+                ephemeral=True
+            )
+
+        embed = discord.Embed(
+            title="📊 USER STATS",
+            color=EMBED_COLOR
+        )
+
+        embed.add_field(name="User ID", value=uid)
+        embed.add_field(name="XP", value=user["xp"])
+        embed.add_field(name="Level", value=user["level"])
+        embed.add_field(name="Invites", value=user["invites"])
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class AdminPanel(discord.ui.View):
+
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Enter Giveaway", style=discord.ButtonStyle.green)
-    async def enter(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("You joined giveaway!", ephemeral=True)
+    @discord.ui.button(label="Edit XP", emoji="✏️", style=discord.ButtonStyle.blurple)
+    async def editxp(self, interaction: discord.Interaction, button: discord.ui.Button):
 
-# GENERATE ID
-def generate_id():
-    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+        if not admin_only(interaction):
+            return await interaction.response.send_message("Admin only.", ephemeral=True)
 
-# CREATE GIVEAWAY
-@bot.tree.command(name="giveaway")
-@app_commands.checks.has_permissions(administrator=True)
-async def giveaway(interaction: discord.Interaction, duration:int, prize:str):
+        await interaction.response.send_modal(EditXPModal())
 
-    gw_id = generate_id()
-    end = datetime.utcnow() + timedelta(minutes=duration)
+    @discord.ui.button(label="Edit Invites", emoji="📩", style=discord.ButtonStyle.green)
+    async def editinv(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+        if not admin_only(interaction):
+            return await interaction.response.send_message("Admin only.", ephemeral=True)
+
+        await interaction.response.send_modal(EditInviteModal())
+
+    @discord.ui.button(label="User Stats", emoji="📊", style=discord.ButtonStyle.gray)
+    async def stats(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+        if not admin_only(interaction):
+            return await interaction.response.send_message("Admin only.", ephemeral=True)
+
+        await interaction.response.send_modal(UserStatsModal())
+
+    @discord.ui.button(label="Add XP", emoji="➕", style=discord.ButtonStyle.success)
+    async def addxp(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+        await interaction.response.send_modal(EditXPModal())
+
+    @discord.ui.button(label="Remove XP", emoji="➖", style=discord.ButtonStyle.danger)
+    async def removexp(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+        await interaction.response.send_modal(EditXPModal())
+
+# ---------------- XP COMMAND ----------------
+
+@bot.tree.command(name="xp")
+async def xp(interaction: discord.Interaction, member: discord.Member=None):
+
+    member = member or interaction.user
+
+    db = load_db()
+    user = db["users"].get(str(member.id), {"xp":0,"level":1})
+
+    embed = discord.Embed(title="📊 XP PROFILE", color=EMBED_COLOR)
+
+    embed.add_field(name="User", value=member.mention)
+    embed.add_field(name="XP", value=user["xp"])
+    embed.add_field(name="Level", value=user["level"])
+
+    await interaction.response.send_message(embed=embed)
+
+# ---------------- INVITE COMMAND ----------------
+
+@bot.tree.command(name="invite")
+async def invite(interaction: discord.Interaction, member: discord.Member=None):
+
+    member = member or interaction.user
+
+    db = load_db()
+    user = db["users"].get(str(member.id), {"invites":0})
+
+    embed = discord.Embed(title="📨 INVITES", color=EMBED_COLOR)
+    embed.add_field(name="User", value=member.mention)
+    embed.add_field(name="Invites", value=user["invites"])
+
+    await interaction.response.send_message(embed=embed)
+
+# ---------------- CREATE GIVEAWAY ----------------
+
+@bot.tree.command(name="cgw")
+async def cgw(interaction: discord.Interaction, prize:str, winners:int,
+              role:discord.Role=None, xp:int=0, invites:int=0):
+
+    if not admin_only(interaction):
+        return await interaction.response.send_message("Admin only.", ephemeral=True)
+
+    db = load_db()
+
+    gid = str(random.randint(10000,99999))
 
     embed = discord.Embed(
         title="🎉 GIVEAWAY",
-        description=f"Prize: **{prize}**\nEnds: <t:{int(end.timestamp())}:R>",
-        color=0xff0000
+        color=EMBED_COLOR
     )
 
-    embed.set_footer(text=f"Giveaway ID: {gw_id}")
+    embed.add_field(name="Prize", value=prize, inline=False)
+    embed.add_field(name="Winners", value=winners)
+    embed.add_field(name="Host", value=interaction.user.mention)
+    embed.add_field(name="Entries", value="0")
 
-    view = GiveawayView()
-
-    msg = await interaction.channel.send(embed=embed, view=view)
-
-    cursor.execute(
-        "INSERT INTO giveaways VALUES (?,?,?,0)",
-        (gw_id,msg.id,interaction.channel.id)
+    embed.add_field(
+        name="Requirements",
+        value=f"Role: {role.mention if role else 'None'}\nXP: {xp}\nInvites: {invites}",
+        inline=False
     )
 
-    db.commit()
+    embed.set_footer(text=f"Giveaway ID: {gid}")
 
-    await interaction.response.send_message("Giveaway created.", ephemeral=True)
+    msg = await interaction.channel.send(embed=embed)
 
-# END GIVEAWAY
+    view = GiveawayView(gid)
+    await msg.edit(view=view)
+
+    db["giveaways"][gid] = {
+        "message": msg.id,
+        "channel": interaction.channel.id,
+        "prize": prize,
+        "winners": winners,
+        "entries": [],
+        "host": interaction.user.id,
+        "role_req": role.id if role else None,
+        "xp_req": xp,
+        "invite_req": invites
+    }
+
+    save_db(db)
+
+    await interaction.response.send_message(
+        f"✅ Giveaway Created (ID: {gid})",
+        ephemeral=True
+    )
+
+# ---------------- END GIVEAWAY ----------------
+
 @bot.tree.command(name="endgw")
-@app_commands.checks.has_permissions(administrator=True)
-async def endgw(interaction: discord.Interaction, gw_id:str):
+async def endgw(interaction: discord.Interaction, gid:str):
 
-    cursor.execute("SELECT message_id, channel_id FROM giveaways WHERE gw_id=?",(gw_id,))
-    data = cursor.fetchone()
-
-    if data is None:
-        await interaction.response.send_message("Invalid ID")
+    if not admin_only(interaction):
         return
 
-    channel = bot.get_channel(data[1])
-    msg = await channel.fetch_message(data[0])
+    db = load_db()
+
+    if gid not in db["giveaways"]:
+        return await interaction.response.send_message("Invalid ID", ephemeral=True)
+
+    gw = db["giveaways"][gid]
+
+    channel = bot.get_channel(gw["channel"])
+    msg = await channel.fetch_message(gw["message"])
+
+    if not gw["entries"]:
+        await channel.send("No entries.")
+        return
+
+    winners = random.sample(
+        gw["entries"],
+        min(len(gw["entries"]), gw["winners"])
+    )
+
+    winner_mentions = " ".join([f"<@{w}>" for w in winners])
 
     embed = msg.embeds[0]
-    embed.title = "Giveaway Ended"
+    embed.title = "🎉 GIVEAWAY ENDED"
 
-    await msg.edit(embed=embed, view=None)
+    view = GiveawayView(gid, ended=True)
 
-    await interaction.response.send_message("Giveaway ended")
+    await msg.edit(embed=embed, view=view)
 
-# DELETE GIVEAWAY
+    await channel.send(
+        f"🎉 Winner(s): {winner_mentions}"
+    )
+
+    del db["giveaways"][gid]
+    save_db(db)
+
+    await interaction.response.send_message("Giveaway ended.", ephemeral=True)
+
+# ---------------- DELETE GIVEAWAY ----------------
+
 @bot.tree.command(name="deletegw")
-@app_commands.checks.has_permissions(administrator=True)
-async def deletegw(interaction: discord.Interaction, gw_id:str):
+async def deletegw(interaction: discord.Interaction, gid:str):
 
-    cursor.execute("SELECT message_id, channel_id FROM giveaways WHERE gw_id=?",(gw_id,))
-    data = cursor.fetchone()
-
-    if data is None:
-        await interaction.response.send_message("Invalid ID")
+    if not admin_only(interaction):
         return
 
-    channel = bot.get_channel(data[1])
-    msg = await channel.fetch_message(data[0])
+    db = load_db()
+
+    if gid not in db["giveaways"]:
+        return await interaction.response.send_message("Invalid ID", ephemeral=True)
+
+    gw = db["giveaways"][gid]
+
+    channel = bot.get_channel(gw["channel"])
+    msg = await channel.fetch_message(gw["message"])
 
     await msg.delete()
 
-    cursor.execute("DELETE FROM giveaways WHERE gw_id=?",(gw_id,))
-    db.commit()
+    del db["giveaways"][gid]
+    save_db(db)
 
-    await interaction.response.send_message("Giveaway deleted")
-
-# ADMIN PANEL
-@bot.tree.command(name="adminpanel")
-@app_commands.checks.has_permissions(administrator=True)
-async def adminpanel(interaction: discord.Interaction):
-
-    embed = discord.Embed(
-        title="Admin Panel",
-        description="""
-Admin commands
-
-Edit XP
-Edit Invites
-Manage Giveaways
-Bot Logs
-""",
-        color=0x0099ff
+    await interaction.response.send_message(
+        "Giveaway deleted.",
+        ephemeral=True
     )
 
+# ---------------- HELP COMMAND ----------------
+
+@bot.tree.command(name="help")
+async def help(interaction: discord.Interaction):
+
+    embed = discord.Embed(
+        title="📘 BOT COMMANDS",
+        color=EMBED_COLOR
+    )
+
+    embed.add_field(
+        name="Public",
+        value="""
+/xp
+/invite
+/help
+""",
+        inline=False
+    )
+
+    embed.add_field(
+        name="Admin",
+        value="""
+/cgw
+/endgw
+/deletegw
+""",
+        inline=False
+    )
+
+    embed.set_footer(text="SARAIKI BOT • Programmed by Subhan")
+
     await interaction.response.send_message(embed=embed)
+
+# ---------------- ADMIN PANEL COMMAND ----------------
+
+@bot.tree.command(name="adminpanel")
+async def adminpanel(interaction: discord.Interaction):
+
+    if not admin_only(interaction):
+        return await interaction.response.send_message(
+            "Admin only command.",
+            ephemeral=True
+        )
+
+    embed = discord.Embed(
+        title="⚙️ ADMIN CONTROL PANEL",
+        description="""
+Manage server users easily.
+
+Buttons Available:
+✏️ Edit XP
+📩 Edit Invites
+➕ Add XP
+➖ Remove XP
+📊 Check User Stats
+""",
+        color=EMBED_COLOR
+    )
+
+    embed.set_footer(text="Premium Admin System")
+
+    await interaction.response.send_message(
+        embed=embed,
+        view=AdminPanel()
+    )
+
+# ---------------- RUN ----------------
 
 bot.run(TOKEN)
