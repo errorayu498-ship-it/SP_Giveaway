@@ -160,7 +160,7 @@ requirement:discord.Role=None
     gid = str(random.randint(10000,99999))
 
     embed = discord.Embed(
-        title="🎉 QUICK GIVEAWAY",
+        title="🎉 SP GIVEAWAY",
         description="Click button below to join!",
         color=EMBED_COLOR
     )
