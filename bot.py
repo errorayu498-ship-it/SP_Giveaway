@@ -8,21 +8,19 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
-
 TOKEN = os.getenv("TOKEN")
 
 with open("config.json") as f:
     config = json.load(f)
 
-LOG_CHANNEL = config["log_channel_id"]
 EMBED_COLOR = config["embed_color"]
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# ------------------------
-# DATA FUNCTIONS
-# ------------------------
+# -------------------------
+# DATA SYSTEM
+# -------------------------
 
 def load_giveaways():
     if not os.path.exists("giveaways.json"):
@@ -36,9 +34,9 @@ def save_giveaways(data):
     with open("giveaways.json","w") as f:
         json.dump(data,f,indent=4)
 
-# ------------------------
-# GIVEAWAY BUTTON VIEW
-# ------------------------
+# -------------------------
+# BUTTON VIEW
+# -------------------------
 
 class GiveawayView(discord.ui.View):
 
@@ -50,37 +48,26 @@ class GiveawayView(discord.ui.View):
             for item in self.children:
                 item.disabled = True
 
-    @discord.ui.button(label="Enter Giveaway", style=discord.ButtonStyle.green, emoji="🎉", custom_id="enter_gw")
+    @discord.ui.button(label="Enter Giveaway", style=discord.ButtonStyle.green, emoji="🎉")
     async def enter(self, interaction: discord.Interaction, button: discord.ui.Button):
 
         data = load_giveaways()
 
         if self.gw_id not in data:
-            await interaction.response.send_message(
-                "❌ Giveaway not active.",
-                ephemeral=True
-            )
+            await interaction.response.send_message("❌ Giveaway not active.", ephemeral=True)
             return
 
         gw = data[self.gw_id]
-
         user = interaction.user
 
         if user.id in gw["entries"]:
-            await interaction.response.send_message(
-                "⚠️ You already joined this giveaway.",
-                ephemeral=True
-            )
+            await interaction.response.send_message("⚠️ You already joined.", ephemeral=True)
             return
 
-        # requirement check
         if gw["requirement"]:
+            role_ids = [r.id for r in user.roles]
 
-            role_required = int(gw["requirement"])
-
-            roles = [r.id for r in user.roles]
-
-            if role_required not in roles:
+            if gw["requirement"] not in role_ids:
                 await interaction.response.send_message(
                     "❌ You don't meet giveaway requirements.",
                     ephemeral=True
@@ -88,19 +75,13 @@ class GiveawayView(discord.ui.View):
                 return
 
         gw["entries"].append(user.id)
-
         save_giveaways(data)
 
         channel = interaction.channel
         msg = await channel.fetch_message(gw["message"])
 
         embed = msg.embeds[0]
-
-        embed.set_field_at(
-            2,
-            name="Entries",
-            value=str(len(gw["entries"]))
-        )
+        embed.set_field_at(3,name="Entries",value=str(len(gw["entries"])))
 
         await msg.edit(embed=embed)
 
@@ -109,9 +90,9 @@ class GiveawayView(discord.ui.View):
             ephemeral=True
         )
 
-# ------------------------
+# -------------------------
 # READY EVENT
-# ------------------------
+# -------------------------
 
 @bot.event
 async def on_ready():
@@ -120,123 +101,112 @@ async def on_ready():
 
     data = load_giveaways()
 
-    for gw_id in data:
-        bot.add_view(GiveawayView(gw_id))
+    for gid in data:
+        bot.add_view(GiveawayView(gid))
 
     check_giveaways.start()
 
     print(f"Bot Ready: {bot.user}")
 
-# ------------------------
-# CREATE GIVEAWAY
-# ------------------------
+# -------------------------
+# HELP COMMAND
+# -------------------------
 
-@bot.tree.command(name="creategw")
-async def creategw(
-interaction: discord.Interaction,
-prize:str,
-winners:int,
-duration:str,
-requirement:str=None
-):
-
-    data = load_giveaways()
-
-    gw_id = str(random.randint(10000,99999))
-
-    end_time = datetime.strptime(duration,"%d/%m/%Y %I:%M:%S %p")
+@bot.tree.command(name="help")
+async def helpcmd(interaction: discord.Interaction):
 
     embed = discord.Embed(
-        title="🎉 NEW GIVEAWAY",
+        title="🎁 Giveaway Bot Commands",
         color=EMBED_COLOR
     )
 
-    embed.add_field(name="Prize",value=prize,inline=False)
-    embed.add_field(name="Winners",value=winners)
-    embed.add_field(name="Entries",value="0")
-    embed.add_field(name="Ends",value=duration)
-    embed.add_field(name="Requirement",value=requirement if requirement else "No Any Requirement")
-
-    embed.set_footer(text=f"Giveaway ID: {gw_id}")
-
-    msg = await interaction.channel.send(embed=embed)
-
-    view = GiveawayView(gw_id)
-
-    await msg.edit(view=view)
-
-    data[gw_id] = {
-
-        "message":msg.id,
-        "channel":interaction.channel.id,
-        "prize":prize,
-        "winners":winners,
-        "end":duration,
-        "entries":[],
-        "requirement":requirement,
-        "type":"normal"
-    }
-
-    save_giveaways(data)
-
-    await interaction.response.send_message(
-        "✅ Giveaway Created",
-        ephemeral=True
+    embed.add_field(
+        name="Giveaway Commands",
+        value="""
+`/creategw` → Create timed giveaway  
+`/cgw` → Quick giveaway  
+`/endgw` → End giveaway  
+`/reroll` → Reroll winners  
+""",
+        inline=False
     )
 
-# ------------------------
+    embed.add_field(
+        name="Manager Commands",
+        value="""
+`/glist` → List active giveaways  
+`/ginfo` → Giveaway info  
+`/gdelete` → Delete giveaway  
+""",
+        inline=False
+    )
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# -------------------------
 # QUICK GIVEAWAY
-# ------------------------
+# -------------------------
 
 @bot.tree.command(name="cgw")
 async def cgw(
 interaction: discord.Interaction,
 prize:str,
-winners:int
+winners:int,
+requirement:discord.Role=None
 ):
 
     data = load_giveaways()
 
-    gw_id = str(random.randint(10000,99999))
+    gid = str(random.randint(10000,99999))
 
     embed = discord.Embed(
-        title="⚡ QUICK GIVEAWAY",
+        title="🎉 QUICK GIVEAWAY",
+        description="Click button below to join!",
         color=EMBED_COLOR
     )
 
     embed.add_field(name="Prize",value=prize,inline=False)
+    embed.add_field(name="Host",value=interaction.user.mention)
     embed.add_field(name="Winners",value=winners)
     embed.add_field(name="Entries",value="0")
 
-    embed.set_footer(text=f"Giveaway ID: {gw_id}")
+    if requirement:
+        embed.add_field(name="Requirement",value=requirement.mention)
+        req = requirement.id
+    else:
+        embed.add_field(name="Requirement",value="No Any Requirement")
+        req = None
+
+    embed.add_field(name="Giveaway Reactor",value="@everyone")
+
+    embed.set_footer(text=f"Giveaway ID: {gid}")
 
     msg = await interaction.channel.send(embed=embed)
 
-    view = GiveawayView(gw_id)
-
+    view = GiveawayView(gid)
     await msg.edit(view=view)
 
-    data[gw_id] = {
-
+    data[gid] = {
         "message":msg.id,
         "channel":interaction.channel.id,
         "prize":prize,
         "winners":winners,
         "entries":[],
-        "requirement":None,
-        "type":"quick"
+        "host":interaction.user.id,
+        "requirement":req,
+        "end":None
     }
 
     save_giveaways(data)
 
     await interaction.response.send_message(
-        "⚡ Quick Giveaway Created",
+        f"✅ Giveaway Created | ID: `{gid}`",
         ephemeral=True
     )
 
-# ------------------------
+# -------------------------
 # END GIVEAWAY
-# ------------------------
+# -------------------------
 
 @bot.tree.command(name="endgw")
 async def endgw(interaction:discord.Interaction,giveaway_id:str):
@@ -244,29 +214,18 @@ async def endgw(interaction:discord.Interaction,giveaway_id:str):
     data = load_giveaways()
 
     if giveaway_id not in data:
-
-        await interaction.response.send_message(
-            "❌ Giveaway not found",
-            ephemeral=True
-        )
+        await interaction.response.send_message("❌ Giveaway not found.",ephemeral=True)
         return
 
     gw = data[giveaway_id]
 
     channel = bot.get_channel(gw["channel"])
-
     message = await channel.fetch_message(gw["message"])
 
     entries = gw["entries"]
 
-    if len(entries) == 0:
-
-        await channel.send("❌ No entries in giveaway.")
-
-    else:
-
-        winners = random.sample(entries, min(len(entries), gw["winners"]))
-
+    if entries:
+        winners = random.sample(entries,min(len(entries),gw["winners"]))
         mention = " ".join([f"<@{w}>" for w in winners])
 
         embed = discord.Embed(
@@ -277,25 +236,17 @@ async def endgw(interaction:discord.Interaction,giveaway_id:str):
 
         await channel.send(embed=embed)
 
-    # disable button
-    old_embed = message.embeds[0]
-
-    view = GiveawayView(giveaway_id, ended=True)
-
-    await message.edit(embed=old_embed, view=view)
+    view = GiveawayView(giveaway_id,ended=True)
+    await message.edit(view=view)
 
     del data[giveaway_id]
-
     save_giveaways(data)
 
-    await interaction.response.send_message(
-        "✅ Giveaway Ended",
-        ephemeral=True
-    )
+    await interaction.response.send_message("✅ Giveaway Ended",ephemeral=True)
 
-# ------------------------
+# -------------------------
 # REROLL
-# ------------------------
+# -------------------------
 
 @bot.tree.command(name="reroll")
 async def reroll(interaction:discord.Interaction,giveaway_id:str):
@@ -303,97 +254,118 @@ async def reroll(interaction:discord.Interaction,giveaway_id:str):
     data = load_giveaways()
 
     if giveaway_id not in data:
-
-        await interaction.response.send_message(
-            "❌ Giveaway not found.",
-            ephemeral=True
-        )
+        await interaction.response.send_message("❌ Giveaway not found.",ephemeral=True)
         return
 
     gw = data[giveaway_id]
 
     entries = gw["entries"]
 
-    if len(entries) == 0:
-
-        await interaction.response.send_message(
-            "❌ No entries.",
-            ephemeral=True
-        )
+    if not entries:
+        await interaction.response.send_message("❌ No entries.",ephemeral=True)
         return
 
-    winners = random.sample(entries, min(len(entries), gw["winners"]))
-
+    winners = random.sample(entries,min(len(entries),gw["winners"]))
     mention = " ".join([f"<@{w}>" for w in winners])
 
     channel = bot.get_channel(gw["channel"])
 
     embed = discord.Embed(
         title="🔄 GIVEAWAY REROLLED",
-        description=f"Prize: **{gw['prize']}**\nNew Winner(s): {mention}",
+        description=f"New Winner(s): {mention}",
         color=EMBED_COLOR
     )
 
     await channel.send(embed=embed)
 
-    await interaction.response.send_message(
-        "✅ Giveaway rerolled.",
-        ephemeral=True
-    )
+    await interaction.response.send_message("✅ Rerolled",ephemeral=True)
 
-# ------------------------
-# AUTO END SYSTEM
-# ------------------------
+# -------------------------
+# LIST GIVEAWAYS
+# -------------------------
 
-@tasks.loop(seconds=30)
-async def check_giveaways():
+@bot.tree.command(name="glist")
+async def glist(interaction:discord.Interaction):
 
     data = load_giveaways()
 
-    now = datetime.now()
+    if not data:
+        await interaction.response.send_message("❌ No active giveaways.",ephemeral=True)
+        return
 
-    ended = []
+    embed = discord.Embed(title="🎁 Active Giveaways",color=EMBED_COLOR)
 
-    for gw_id,gw in data.items():
+    for gid,gw in data.items():
 
-        if "end" not in gw:
-            continue
+        embed.add_field(
+            name=f"ID: {gid}",
+            value=f"Prize: {gw['prize']}\nEntries: {len(gw['entries'])}",
+            inline=False
+        )
 
-        end = datetime.strptime(gw["end"],"%d/%m/%Y %I:%M:%S %p")
+    await interaction.response.send_message(embed=embed)
 
-        if now >= end:
+# -------------------------
+# GIVEAWAY INFO
+# -------------------------
 
-            channel = bot.get_channel(gw["channel"])
+@bot.tree.command(name="ginfo")
+async def ginfo(interaction:discord.Interaction,giveaway_id:str):
 
-            message = await channel.fetch_message(gw["message"])
+    data = load_giveaways()
 
-            entries = gw["entries"]
+    if giveaway_id not in data:
+        await interaction.response.send_message("❌ Giveaway not found.",ephemeral=True)
+        return
 
-            if entries:
+    gw = data[giveaway_id]
 
-                winners = random.sample(entries, min(len(entries), gw["winners"]))
+    embed = discord.Embed(title="🎉 Giveaway Info",color=EMBED_COLOR)
 
-                mention = " ".join([f"<@{w}>" for w in winners])
+    embed.add_field(name="Prize",value=gw["prize"])
+    embed.add_field(name="Entries",value=len(gw["entries"]))
+    embed.add_field(name="Winners",value=gw["winners"])
 
-                embed = discord.Embed(
-                    title="🎉 GIVEAWAY ENDED",
-                    description=f"Prize: **{gw['prize']}**\nWinner(s): {mention}",
-                    color=EMBED_COLOR
-                )
+    embed.set_footer(text=f"Giveaway ID: {giveaway_id}")
 
-                await channel.send(embed=embed)
+    await interaction.response.send_message(embed=embed)
 
-            view = GiveawayView(gw_id, ended=True)
+# -------------------------
+# DELETE GIVEAWAY
+# -------------------------
 
-            await message.edit(view=view)
+@bot.tree.command(name="gdelete")
+async def gdelete(interaction:discord.Interaction,giveaway_id:str):
 
-            ended.append(gw_id)
+    data = load_giveaways()
 
-    for gw_id in ended:
-        del data[gw_id]
+    if giveaway_id not in data:
+        await interaction.response.send_message("❌ Giveaway not found.",ephemeral=True)
+        return
 
+    gw = data[giveaway_id]
+
+    channel = bot.get_channel(gw["channel"])
+
+    try:
+        msg = await channel.fetch_message(gw["message"])
+        await msg.delete()
+    except:
+        pass
+
+    del data[giveaway_id]
     save_giveaways(data)
 
-# ------------------------
+    await interaction.response.send_message("🗑 Giveaway deleted.",ephemeral=True)
+
+# -------------------------
+# AUTO END SYSTEM
+# -------------------------
+
+@tasks.loop(seconds=30)
+async def check_giveaways():
+    pass
+
+# -------------------------
 
 bot.run(TOKEN)
