@@ -301,7 +301,7 @@ async def endgw(interaction: discord.Interaction, gid:str):
     await msg.edit(embed=embed, view=view)
 
     await channel.send(
-        f"🎁 Prize: {prize}"
+        f"🎁 Prize: {prize}",
         f"🎉 Winner(s): {winner_mentions}"
     )
 
