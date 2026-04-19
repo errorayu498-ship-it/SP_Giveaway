@@ -5,10 +5,8 @@ import json
 import random
 import os
 import time
-from datetime import datetime
 
 load_dotenv()
-
 TOKEN = os.getenv("TOKEN")
 
 with open("config.json") as f:
@@ -36,6 +34,11 @@ def save_db(data):
     with open("database.json","w") as f:
         json.dump(data,f,indent=4)
 
+def get_user(db, uid):
+    if uid not in db["users"]:
+        db["users"][uid] = {"xp":0,"level":1,"invites":0}
+    return db["users"][uid]
+
 # ---------------- XP SYSTEM ----------------
 
 @bot.event
@@ -50,32 +53,28 @@ async def on_message(message):
     db = load_db()
     uid = str(message.author.id)
 
-    if uid not in db["users"]:
-        db["users"][uid] = {"xp":0,"level":1,"invites":0}
+    user = get_user(db, uid)
 
-    # anti spam cooldown
     now = time.time()
     if uid in cooldowns and now - cooldowns[uid] < 5:
         return
 
     cooldowns[uid] = now
 
-    db["users"][uid]["xp"] += 10
+    old = user["xp"]
 
-    xp = db["users"][uid]["xp"]
-    level = db["users"][uid]["level"]
+    user["xp"] += 10
 
-    if xp >= level * 100:
-        db["users"][uid]["level"] += 1
+    new = user["xp"]
 
-        await message.channel.send(
-            f"🎉 {message.author.mention} leveled up to **Level {level+1}**!"
-        )
+    # LEVEL UP
+    if new >= user["level"] * 100:
+        user["level"] += 1
+        await message.channel.send(f"🎉 {message.author.mention} reached Level {user['level']}!")
 
-    else:
-        await message.channel.send(
-            f"📈 {message.author.mention} +10 XP"
-        )
+    # ONLY 100 XP MILESTONE MESSAGE
+    if new % 100 == 0 and new != old:
+        await message.channel.send(f"📈 {message.author.mention} reached {new} XP!")
 
     save_db(db)
 
@@ -98,33 +97,27 @@ class GiveawayView(discord.ui.View):
 
         db = load_db()
         gw = db["giveaways"][self.gw_id]
-        user = interaction.user
 
-        uid = str(user.id)
+        uid = str(interaction.user.id)
+        user = get_user(db, uid)
 
         if uid in gw["entries"]:
-            await interaction.response.send_message("Already joined.", ephemeral=True)
-            return
+            return await interaction.response.send_message("Already joined.", ephemeral=True)
 
-        # ROLE CHECK
+        # ROLE
         if gw.get("role_req"):
-            if gw["role_req"] not in [r.id for r in user.roles]:
-                await interaction.response.send_message("❌ Role required.", ephemeral=True)
-                return
+            if gw["role_req"] not in [r.id for r in interaction.user.roles]:
+                return await interaction.response.send_message("❌ Role required", ephemeral=True)
 
-        # LEVEL CHECK
-        if gw.get("level_req"):
-            level = db["users"].get(uid, {}).get("level", 1)
-            if level < gw["level_req"]:
-                await interaction.response.send_message("❌ Level required.", ephemeral=True)
-                return
+        # XP
+        if gw.get("xp_req",0) > 0:
+            if user["xp"] < gw["xp_req"]:
+                return await interaction.response.send_message("❌ XP required", ephemeral=True)
 
-        # INVITE CHECK
-        if gw.get("invite_req"):
-            invites = db["users"].get(uid, {}).get("invites", 0)
-            if invites < gw["invite_req"]:
-                await interaction.response.send_message("❌ Invite requirement not met.", ephemeral=True)
-                return
+        # INVITES
+        if gw.get("invite_req",0) > 0:
+            if user["invites"] < gw["invite_req"]:
+                return await interaction.response.send_message("❌ Invites required", ephemeral=True)
 
         gw["entries"].append(uid)
         save_db(db)
@@ -138,33 +131,89 @@ class GiveawayView(discord.ui.View):
 
         await interaction.response.send_message("🎉 Entered giveaway!", ephemeral=True)
 
-# ---------------- CREATE GIVEAWAY ----------------
+# ---------------- ADMIN CHECK ----------------
 
-@bot.tree.command(name="cgw")
-async def cgw(interaction: discord.Interaction,
-              prize:str,
-              winners:int,
-              role:discord.Role=None,
-              level:int=0,
-              invites:int=0):
+def admin_only(interaction: discord.Interaction):
+    return interaction.user.guild_permissions.administrator
 
-    db = load_db()
+# ---------------- MULTI ACTIVITY ----------------
 
-    gid = str(random.randint(10000,99999))
+@tasks.loop(seconds=15)
+async def change_activity():
 
-    embed = discord.Embed(
-        title="🎉 PREMIUM GIVEAWAY",
-        description="Click button to enter",
-        color=EMBED_COLOR
+    with open("activity.json") as f:
+        data = json.load(f)
+
+    act = random.choice(data["activities"])
+
+    await bot.change_presence(
+        status=discord.Status.dnd,
+        activity=discord.Game(name=act)
     )
 
+# ---------------- READY ----------------
+
+@bot.event
+async def on_ready():
+
+    await bot.tree.sync()
+
+    change_activity.start()
+
+    print(f"BOT ONLINE: {bot.user}")
+
+# ---------------- XP COMMAND ----------------
+
+@bot.tree.command(name="xp")
+async def xp(interaction: discord.Interaction, member: discord.Member=None):
+
+    member = member or interaction.user
+    db = load_db()
+
+    user = db["users"].get(str(member.id), {"xp":0,"level":1})
+
+    embed = discord.Embed(title="📊 XP PROFILE", color=EMBED_COLOR)
+    embed.add_field(name="XP", value=user["xp"])
+    embed.add_field(name="Level", value=user["level"])
+
+    await interaction.response.send_message(embed=embed)
+
+# ---------------- INVITE COMMAND ----------------
+
+@bot.tree.command(name="invite")
+async def invite(interaction: discord.Interaction, member: discord.Member=None):
+
+    member = member or interaction.user
+    db = load_db()
+
+    user = db["users"].get(str(member.id), {"invites":0})
+
+    embed = discord.Embed(title="📨 INVITES", color=EMBED_COLOR)
+    embed.add_field(name="Invites", value=user["invites"])
+
+    await interaction.response.send_message(embed=embed)
+
+# ---------------- ADMIN GIVEAWAY ----------------
+
+@bot.tree.command(name="cgw")
+async def cgw(interaction: discord.Interaction, prize:str, winners:int,
+              role:discord.Role=None, xp:int=0, invites:int=0):
+
+    if not admin_only(interaction):
+        return await interaction.response.send_message("Admin only.", ephemeral=True)
+
+    db = load_db()
+    gid = str(random.randint(10000,99999))
+
+    embed = discord.Embed(title="🎉 SP GIVEAWAY", color=EMBED_COLOR)
     embed.add_field(name="Prize", value=prize)
     embed.add_field(name="Winners", value=winners)
     embed.add_field(name="Host", value=interaction.user.mention)
     embed.add_field(name="Entries", value="0")
 
-    embed.add_field(name="Requirements",
-        value=f"Role: {role.mention if role else 'None'}\nLevel: {level}\nInvites: {invites}"
+    embed.add_field(
+        name="Requirements",
+        value=f"Role: {role.mention if role else 'None'}\nXP: {xp}\nInvites: {invites}"
     )
 
     msg = await interaction.channel.send(embed=embed)
@@ -180,110 +229,29 @@ async def cgw(interaction: discord.Interaction,
         "entries": [],
         "host": interaction.user.id,
         "role_req": role.id if role else None,
-        "level_req": level,
+        "xp_req": xp,
         "invite_req": invites
     }
 
     save_db(db)
 
-    await interaction.response.send_message(f"Created Giveaway ID: {gid}", ephemeral=True)
-
-# ---------------- INVITE TRACKING ----------------
-
-@bot.event
-async def on_member_join(member):
-
-    db = load_db()
-
-    inviter = None
-
-    invites = await member.guild.invites()
-
-    for i in invites:
-        if i.uses > 0:
-            inviter = i.inviter
-            break
-
-    if inviter:
-        uid = str(inviter.id)
-
-        if uid not in db["users"]:
-            db["users"][uid] = {"xp":0,"level":1,"invites":0}
-
-        db["users"][uid]["invites"] += 1
-
-        save_db(db)
-
-        log = bot.get_channel(LOG_CHANNEL)
-
-        await log.send(
-            f"📨 Invite Update\n{inviter.mention} now has {db['users'][uid]['invites']} invites"
-        )
+    await interaction.response.send_message(f"Created {gid}", ephemeral=True)
 
 # ---------------- REROLL ----------------
 
 @bot.tree.command(name="reroll")
 async def reroll(interaction: discord.Interaction, gid:str):
 
-    db = load_db()
+    if not admin_only(interaction):
+        return
 
+    db = load_db()
     gw = db["giveaways"][gid]
 
     winners = random.sample(gw["entries"], min(len(gw["entries"]), gw["winners"]))
 
-    await interaction.channel.send(
-        f"🔄 New Winner(s): " + " ".join([f"<@{w}>" for w in winners])
-    )
+    await interaction.channel.send("🎉 Winner: " + " ".join([f"<@{w}>" for w in winners]))
 
-    await interaction.response.send_message("Rerolled!", ephemeral=True)
-
-# ---------------- END GIVEAWAY ----------------
-
-@bot.tree.command(name="endgw")
-async def endgw(interaction: discord.Interaction, gid:str):
-
-    db = load_db()
-
-    gw = db["giveaways"][gid]
-
-    channel = bot.get_channel(gw["channel"])
-
-    msg = await channel.fetch_message(gw["message"])
-
-    view = GiveawayView(gid, ended=True)
-
-    await msg.edit(view=view)
-
-    if gw["entries"]:
-        winner = random.sample(gw["entries"],1)[0]
-
-        await channel.send(f"🎉 Winner: <@{winner}>")
-
-    del db["giveaways"][gid]
-
-    save_db(db)
-
-    await interaction.response.send_message("Ended", ephemeral=True)
-
-# ---------------- HELP ----------------
-
-@bot.tree.command(name="help")
-async def helpcmd(interaction: discord.Interaction):
-
-    embed = discord.Embed(
-        title="🎁 Bot Help",
-        description="""
-/cgw - create giveaway  
-/endgw - end giveaway  
-/reroll - reroll winner  
-stats system included  
-XP + Invite system active  
-""",
-        color=EMBED_COLOR
-    )
-
-    await interaction.response.send_message(embed=embed, ephemeral=True)
-
-# ---------------- RUN BOT ----------------
+# ---------------- RUN ----------------
 
 bot.run(TOKEN)
